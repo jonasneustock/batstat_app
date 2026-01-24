@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>BatStat - Share Vehicle Data</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body class="min-h-screen bg-gradient-to-r from-blue-600 to-indigo-700 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-lg p-8">
+        <h1 class="text-2xl font-bold text-center text-gray-800 mb-1">Share your EV data</h1>
+        <p class="text-center text-gray-500 mb-6">
+            Submissions are stored for review before they are used for training.
+        </p>
+        <form class="space-y-4" method="get" action="/contribute/submit">
+            <div>
+                <label for="brand" class="block text-sm font-medium text-gray-700">Brand</label>
+                <input id="brand" name="brand" list="brand-list" required
+                       class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+                <datalist id="brand-list">
+                    {% for b in brands %}
+                        <option value="{{ b }}"></option>
+                    {% endfor %}
+                </datalist>
+            </div>
+            <div>
+                <label for="car_type" class="block text-sm font-medium text-gray-700">Car Type</label>
+                <input id="car_type" name="car_type" list="car-type-list" required
+                       class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+                <datalist id="car-type-list">
+                    {% for t in car_types %}
+                        <option value="{{ t }}"></option>
+                    {% endfor %}
+                </datalist>
+            </div>
+            <div>
+                <label for="model_year" class="block text-sm font-medium text-gray-700">Manufacturing Year</label>
+                <input type="number" id="model_year" name="model_year" min="1990" max="{{ current_year }}" value="{{ current_year }}" required
+                       class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+            </div>
+            <div>
+                <label for="odometer_km" class="block text-sm font-medium text-gray-700">Odometer (km)</label>
+                <input type="number" id="odometer_km" name="odometer_km" step="100" min="0" required
+                       class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+            </div>
+            <div>
+                <label for="range_original_km" class="block text-sm font-medium text-gray-700">Original Range (km)</label>
+                <input type="number" id="range_original_km" name="range_original_km" step="1" min="1" required
+                       class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+            </div>
+            <div>
+                <label for="range_current_km" class="block text-sm font-medium text-gray-700">Current Range at Full Charge (km)</label>
+                <input type="number" id="range_current_km" name="range_current_km" step="1" min="1" required
+                       class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+            </div>
+            <button type="submit"
+                    class="w-full py-2 px-4 bg-indigo-600 text-white font-semibold rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                Submit for review
+            </button>
+        </form>
+        <p class="mt-6 text-center text-sm text-gray-500">
+            <a href="/" class="text-indigo-600 hover:text-indigo-900">Back to predictor</a>
+        </p>
+    </div>
+</body>
+</html>

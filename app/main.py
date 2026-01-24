@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional
 
 import joblib
 import pandas as pd
-from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -45,6 +45,7 @@ executor = ThreadPoolExecutor(max_workers=1)
 
 # Job status tracking
 JOB_STATUS: Dict[str, Dict[str, Any]] = {}
+ADMIN_TOKEN = "change-me"
 
 # ---------------------------------------------------------------------------
 # Logging utilities
@@ -58,6 +59,23 @@ from pathlib import Path
 # process the history of interactions.
 LOG_FILE = Path(__file__).resolve().parent.parent / "data" / "interaction_logs.csv"
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "trained_model.joblib"
+SUBMISSIONS_PENDING_FILE = (
+    Path(__file__).resolve().parent.parent / "data" / "user_submissions_pending.csv"
+)
+SUBMISSIONS_APPROVED_FILE = (
+    Path(__file__).resolve().parent.parent / "data" / "user_submissions_approved.csv"
+)
+SUBMISSION_FIELDS = [
+    "submission_id",
+    "submitted_at",
+    "brand",
+    "car_type",
+    "model_year",
+    "odometer_km",
+    "range_original_km",
+    "range_current_km",
+]
+APPROVED_FIELDS = SUBMISSION_FIELDS + ["approved_at"]
 
 def log_interaction(
     brand: str,
@@ -101,6 +119,98 @@ def log_interaction(
             predicted_upper,
             feedback or "",
         ])
+
+
+def _ensure_csv_with_header(path: Path, fieldnames: List[str]) -> None:
+    """Ensure a CSV file exists with the given header row."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(fieldnames)
+
+
+def log_submission_pending(row: Dict[str, Any]) -> None:
+    """Persist a pending user submission for admin review."""
+    _ensure_csv_with_header(SUBMISSIONS_PENDING_FILE, SUBMISSION_FIELDS)
+    with SUBMISSIONS_PENDING_FILE.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=SUBMISSION_FIELDS)
+        writer.writerow(row)
+
+
+def load_pending_submissions() -> List[Dict[str, str]]:
+    """Load all pending submissions as a list of dicts."""
+    if not SUBMISSIONS_PENDING_FILE.exists():
+        return []
+    with SUBMISSIONS_PENDING_FILE.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return list(reader)
+
+
+def approve_submission(submission_id: str) -> bool:
+    """Move a pending submission into the approved dataset."""
+    pending = load_pending_submissions()
+    approved_row: Optional[Dict[str, str]] = None
+    remaining: List[Dict[str, str]] = []
+    for row in pending:
+        if row.get("submission_id") == submission_id:
+            approved_row = row
+        else:
+            remaining.append(row)
+
+    if approved_row is None:
+        return False
+
+    _ensure_csv_with_header(SUBMISSIONS_APPROVED_FILE, APPROVED_FIELDS)
+    approved_row = dict(approved_row)
+    approved_row["approved_at"] = datetime.utcnow().isoformat()
+
+    with SUBMISSIONS_APPROVED_FILE.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=APPROVED_FIELDS)
+        writer.writerow(approved_row)
+
+    with SUBMISSIONS_PENDING_FILE.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=SUBMISSION_FIELDS)
+        writer.writeheader()
+        for row in remaining:
+            writer.writerow(row)
+
+    return True
+
+
+def _validate_submission_values(
+    *,
+    brand: str,
+    car_type: str,
+    model_year: int,
+    odometer_km: float,
+    range_original_km: float,
+    range_current_km: float,
+) -> None:
+    errors: List[str] = []
+    current_year = datetime.now().year
+    if not brand.strip():
+        errors.append("brand is required")
+    if not car_type.strip():
+        errors.append("car_type is required")
+    if model_year < 1990 or model_year > current_year:
+        errors.append("model_year must be between 1990 and the current year")
+    if odometer_km < 0:
+        errors.append("odometer_km must be non-negative")
+    if range_original_km <= 0:
+        errors.append("range_original_km must be positive")
+    if range_current_km <= 0:
+        errors.append("range_current_km must be positive")
+    if range_current_km > range_original_km:
+        errors.append("range_current_km must be less than or equal to range_original_km")
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+
+def _require_admin_token(token: str) -> None:
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def load_model_from_disk() -> Optional[TrainedModel]:
@@ -180,6 +290,83 @@ async def index(request: Request):
             "brands": brands,
             "car_types": car_types,
             "current_year": current_year,
+        },
+    )
+
+
+@app.get("/contribute", response_class=HTMLResponse)
+async def contribute(request: Request):
+    """
+    Render the form for users to contribute vehicle data.
+    """
+    current_year = datetime.now().year
+    brands: List[str] = []
+    car_types: List[str] = []
+    try:
+        df = load_all_sources(default_sources())
+        brands = sorted(df["brand"].dropna().unique())
+        car_types = sorted(df["car_type"].dropna().unique())
+    except Exception:
+        pass
+    return templates.TemplateResponse(
+        "contribute.html",
+        {
+            "request": request,
+            "brands": brands,
+            "car_types": car_types,
+            "current_year": current_year,
+        },
+    )
+
+
+@app.get("/contribute/submit", response_class=HTMLResponse)
+async def contribute_submit(request: Request):
+    """
+    Persist a user submission for admin review.
+    """
+    params = request.query_params
+    try:
+        brand = params["brand"]
+        car_type = params["car_type"]
+        model_year = int(params["model_year"])
+        odometer_km = float(params["odometer_km"])
+        range_original_km = float(params["range_original_km"])
+        range_current_km = float(params["range_current_km"])
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=f"Missing parameter: {exc}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {exc}")
+
+    _validate_submission_values(
+        brand=brand,
+        car_type=car_type,
+        model_year=model_year,
+        odometer_km=odometer_km,
+        range_original_km=range_original_km,
+        range_current_km=range_current_km,
+    )
+
+    submission_id = str(uuid.uuid4())
+    row = {
+        "submission_id": submission_id,
+        "submitted_at": datetime.utcnow().isoformat(),
+        "brand": brand.strip(),
+        "car_type": car_type.strip(),
+        "model_year": model_year,
+        "odometer_km": odometer_km,
+        "range_original_km": range_original_km,
+        "range_current_km": range_current_km,
+    }
+    try:
+        log_submission_pending(row)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to store submission: {exc}")
+
+    return templates.TemplateResponse(
+        "contribute_result.html",
+        {
+            "request": request,
+            "submission_id": submission_id,
         },
     )
 
@@ -368,11 +555,69 @@ async def feedback(
 
 
 # ---------------------------------------------------------------------------
-# Admin API for retraining
+# Admin routes and API
 
 class RetrainResponse(BaseModel):
     job_id: str
     status: str
+
+
+@app.get("/admin/submissions", response_class=HTMLResponse)
+async def admin_submissions(request: Request, token: str = Query(...)):
+    """
+    Admin view for pending submissions and review actions.
+    """
+    _require_admin_token(token)
+    pending = load_pending_submissions()
+    return templates.TemplateResponse(
+        "admin_submissions.html",
+        {
+            "request": request,
+            "pending": pending,
+            "token": token,
+        },
+    )
+
+
+@app.get("/admin/submissions/{submission_id}/accept", response_class=HTMLResponse)
+async def admin_accept_submission(request: Request, submission_id: str, token: str = Query(...)):
+    """
+    Approve a pending submission and move it into the training dataset.
+    """
+    _require_admin_token(token)
+    accepted = approve_submission(submission_id)
+    if not accepted:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return templates.TemplateResponse(
+        "admin_submission_result.html",
+        {
+            "request": request,
+            "submission_id": submission_id,
+            "token": token,
+        },
+    )
+
+
+@app.get("/api/v1/admin/submissions")
+async def admin_submissions_api(token: str = Query(...)):
+    """
+    Return pending submissions for admin review.
+    """
+    _require_admin_token(token)
+    pending = load_pending_submissions()
+    return {"count": len(pending), "submissions": pending}
+
+
+@app.get("/api/v1/admin/submissions/{submission_id}/accept")
+async def admin_accept_submission_api(submission_id: str, token: str = Query(...)):
+    """
+    Approve a pending submission via API.
+    """
+    _require_admin_token(token)
+    accepted = approve_submission(submission_id)
+    if not accepted:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return {"submission_id": submission_id, "status": "accepted"}
 
 
 def _run_retraining(job_id: str) -> None:
@@ -415,9 +660,7 @@ async def retrain(token: str = Query(..., description="Admin token")):
     with a job ID which can be polled via the status endpoint.
     """
     # In a real application use secure authentication; here use simple token
-    expected_token = "change-me"
-    if token != expected_token:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_admin_token(token)
     job_id = str(uuid.uuid4())
     JOB_STATUS[job_id] = {"status": "queued"}
     # Schedule background training

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>BatStat - Pending Submissions</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body class="min-h-screen bg-gray-100 p-6">
+    <div class="max-w-6xl mx-auto bg-white shadow rounded-lg p-6">
+        <h1 class="text-2xl font-bold text-gray-800 mb-4">Pending submissions</h1>
+        {% if pending %}
+            <div class="overflow-x-auto">
+                <table class="min-w-full text-sm text-left text-gray-600">
+                    <thead class="text-xs uppercase bg-gray-50 text-gray-500">
+                        <tr>
+                            <th class="px-4 py-2">Submission ID</th>
+                            <th class="px-4 py-2">Brand</th>
+                            <th class="px-4 py-2">Type</th>
+                            <th class="px-4 py-2">Year</th>
+                            <th class="px-4 py-2">Odometer</th>
+                            <th class="px-4 py-2">Range (orig/current)</th>
+                            <th class="px-4 py-2">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in pending %}
+                            <tr class="border-t">
+                                <td class="px-4 py-2 font-mono text-xs">{{ row.submission_id }}</td>
+                                <td class="px-4 py-2">{{ row.brand }}</td>
+                                <td class="px-4 py-2">{{ row.car_type }}</td>
+                                <td class="px-4 py-2">{{ row.model_year }}</td>
+                                <td class="px-4 py-2">{{ row.odometer_km }}</td>
+                                <td class="px-4 py-2">{{ row.range_original_km }} / {{ row.range_current_km }}</td>
+                                <td class="px-4 py-2">
+                                    <a href="/admin/submissions/{{ row.submission_id }}/accept?token={{ token }}"
+                                       class="text-indigo-600 hover:text-indigo-900">Accept</a>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p class="text-gray-600">No pending submissions.</p>
+        {% endif %}
+    </div>
+</body>
+</html>

@@ -48,6 +48,9 @@ class DataSource:
 
 
 DATA_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "source_cache"
+USER_SUBMISSIONS_APPROVED_PATH = (
+    Path(__file__).resolve().parent.parent / "data" / "user_submissions_approved.csv"
+)
 
 
 def _read_csv_cached(url: str, cache_path: Path) -> pd.DataFrame:
@@ -81,6 +84,29 @@ def _hash_series_fraction(series: pd.Series, salt: str) -> pd.Series:
     return series.fillna("").astype(str).apply(lambda v: _hash_fraction(v, salt))
 
 
+def _derive_usage_features(base_id: pd.Series, is_phev: pd.Series) -> pd.DataFrame:
+    """Derive proxy usage features when only partial telemetry is available."""
+    frac_fast = _hash_series_fraction(base_id, "fast")
+    frac_soc = _hash_series_fraction(base_id, "soc")
+    frac_temp = _hash_series_fraction(base_id, "temp")
+
+    fast_share = np.where(is_phev, 0.12, 0.25) + (frac_fast - 0.5) * 0.18
+    fast_share = np.clip(fast_share, 0.02, 0.6)
+
+    avg_soc = 0.55 + (frac_soc - 0.5) * 0.16
+    avg_soc = np.clip(avg_soc, 0.25, 0.85)
+
+    avg_temp_c = 12 + frac_temp * 18
+
+    return pd.DataFrame(
+        {
+            "fast_share": fast_share.astype(float),
+            "avg_soc": avg_soc.astype(float),
+            "avg_temp_c": avg_temp_c.astype(float),
+        }
+    )
+
+
 def _build_feature_frame(
     *,
     base_id: pd.Series,
@@ -95,9 +121,6 @@ def _build_feature_frame(
     range_km = range_km.fillna(0).clip(lower=0)
 
     frac_usage = _hash_series_fraction(base_id, "usage")
-    frac_fast = _hash_series_fraction(base_id, "fast")
-    frac_soc = _hash_series_fraction(base_id, "soc")
-    frac_temp = _hash_series_fraction(base_id, "temp")
     frac_eol = _hash_series_fraction(base_id, "eol")
 
     # Annual distance increases with electric range; PHEVs tend to drive fewer EV kms.
@@ -106,14 +129,10 @@ def _build_feature_frame(
     annual_km = annual_km * np.where(is_phev, 0.85, 1.0)
     km = age_years * annual_km
 
-    # Charging behavior and operating conditions.
-    fast_share = np.where(is_phev, 0.12, 0.25) + (frac_fast - 0.5) * 0.18
-    fast_share = np.clip(fast_share, 0.02, 0.6)
-
-    avg_soc = 0.55 + (frac_soc - 0.5) * 0.16
-    avg_soc = np.clip(avg_soc, 0.25, 0.85)
-
-    avg_temp_c = 12 + frac_temp * 18
+    usage_features = _derive_usage_features(base_id, is_phev)
+    fast_share = usage_features["fast_share"]
+    avg_soc = usage_features["avg_soc"]
+    avg_temp_c = usage_features["avg_temp_c"]
 
     # End-of-life mileage estimate informed by range and EV/PHEV class.
     base_life = np.where(is_phev, 140_000, 190_000)
@@ -283,6 +302,69 @@ class FuelEconomyEVSource(DataSource):
         return feature_df.dropna()
 
 
+@dataclass
+class UserApprovedSubmissionsSource(DataSource):
+    """Approved user submissions for model training."""
+
+    path: Path = USER_SUBMISSIONS_APPROVED_PATH
+
+    def load(self) -> pd.DataFrame:
+        if not self.path.exists():
+            return pd.DataFrame()
+        df = pd.read_csv(self.path)
+        if df.empty:
+            return pd.DataFrame()
+
+        required = [
+            "submission_id",
+            "brand",
+            "car_type",
+            "model_year",
+            "odometer_km",
+            "range_original_km",
+            "range_current_km",
+        ]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            raise ValueError(f"Approved submissions missing columns: {missing}")
+
+        current_year = datetime.now().year
+        age_years = current_year - pd.to_numeric(df["model_year"], errors="coerce")
+        odometer_km = pd.to_numeric(df["odometer_km"], errors="coerce")
+        range_original = pd.to_numeric(df["range_original_km"], errors="coerce")
+        range_current = pd.to_numeric(df["range_current_km"], errors="coerce")
+
+        denom = range_original.replace(0, np.nan)
+        capacity_ratio = (range_current / denom).clip(lower=0, upper=0.99)
+        eol_km = 0.3 * odometer_km / (1 - capacity_ratio)
+        eol_km = eol_km.replace([np.inf, -np.inf], np.nan)
+        eol_km = np.maximum(eol_km, odometer_km)
+        eol_km = eol_km.fillna(odometer_km)
+
+        car_type = df["car_type"].astype(str)
+        is_phev = car_type.str.contains("PHEV|Plug", case=False, na=False)
+        base_id = df["submission_id"].astype(str)
+        usage_features = _derive_usage_features(base_id, is_phev)
+
+        feature_df = pd.DataFrame(
+            {
+                "brand": df["brand"].astype(str),
+                "car_type": car_type,
+                "age_years": age_years.astype(float),
+                "km": odometer_km.astype(float),
+                "fast_share": usage_features["fast_share"],
+                "avg_soc": usage_features["avg_soc"],
+                "avg_temp_c": usage_features["avg_temp_c"],
+                "eol_km": eol_km.astype(float),
+            }
+        )
+        return feature_df.dropna()
+
+
 def default_sources() -> List[DataSource]:
     """Primary data sources used by the application."""
-    return [WashingtonEVPopulationSource(), FuelEconomyEVSource()]
+    return [
+        WashingtonEVPopulationSource(),
+        FuelEconomyEVSource(),
+        UserApprovedSubmissionsSource(),
+    ]
