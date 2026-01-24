@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  batstat:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - batstat-data:/app/batstat_app/data
+      - batstat-models:/app/batstat_app/models
+
+volumes:
+  batstat-data:
+  batstat-models:

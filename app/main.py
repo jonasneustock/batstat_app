@@ -17,13 +17,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import joblib
 import pandas as pd
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .data.sources import ExampleSource, load_all_sources
+from .data.sources import default_sources, load_all_sources
 from .ml.model import TrainedModel, train_model
 
 import numpy as np  # needed for random and array operations
@@ -56,6 +57,7 @@ from pathlib import Path
 # feedback.  Storing logs in a simple CSV makes it easy to inspect and
 # process the history of interactions.
 LOG_FILE = Path(__file__).resolve().parent.parent / "data" / "interaction_logs.csv"
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "trained_model.joblib"
 
 def log_interaction(
     brand: str,
@@ -101,16 +103,38 @@ def log_interaction(
         ])
 
 
+def load_model_from_disk() -> Optional[TrainedModel]:
+    """Load a persisted model from disk if it exists."""
+    if not MODEL_PATH.exists():
+        return None
+    try:
+        return joblib.load(MODEL_PATH)
+    except Exception:
+        return None
+
+
+def save_model_to_disk(model: TrainedModel) -> None:
+    """Persist the trained model to disk for reuse across restarts."""
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, MODEL_PATH)
+
+
 async def get_model() -> TrainedModel:
     """Return the currently loaded model, loading if necessary."""
     global MODEL
     async with MODEL_LOCK:
         if MODEL is None:
-            # Load dataset and train initial model
-            df = load_all_sources([ExampleSource()])
-            if df.empty:
-                raise HTTPException(status_code=500, detail="No training data available")
-            MODEL = train_model(df)
+            MODEL = load_model_from_disk()
+            if MODEL is None:
+                # Load dataset and train initial model
+            df = load_all_sources(default_sources())
+                if df.empty:
+                    raise HTTPException(status_code=500, detail="No training data available")
+                MODEL = train_model(df)
+                try:
+                    save_model_to_disk(MODEL)
+                except Exception:
+                    pass
         return MODEL
 
 
@@ -143,9 +167,9 @@ async def index(request: Request):
     # Preload model and dataset to populate brand/type options
     model = await get_model()
     # Access the training data used to build the model; not stored directly
-    # here, so regenerate using ExampleSource.  For a real implementation you
-    # might persist unique values separately.
-    df = load_all_sources([ExampleSource()])
+    # here, so regenerate from the configured sources. For a real implementation
+    # you might persist unique values separately.
+    df = load_all_sources(default_sources())
     brands = sorted(df["brand"].unique())
     car_types = sorted(df["car_type"].unique())
     current_year = datetime.now().year
@@ -274,7 +298,7 @@ async def dashboard(request: Request):
     """
     Display a simple dashboard with summary statistics of the training data.
     """
-    df = load_all_sources([ExampleSource()])
+    df = load_all_sources(default_sources())
     summary = {
         "count": len(df),
         "min_age": df["age_years"].min(),
@@ -357,7 +381,7 @@ def _run_retraining(job_id: str) -> None:
         JOB_STATUS[job_id]["status"] = "running"
         JOB_STATUS[job_id]["started_at"] = datetime.utcnow().isoformat()
         # Load fresh dataset (could be updated with new sources)
-        df = load_all_sources([ExampleSource()])
+        df = load_all_sources(default_sources())
         if df.empty:
             raise RuntimeError("No training data available for retraining")
         new_model = train_model(df, random_state=np.random.randint(0, 2**32 - 1))
@@ -375,6 +399,10 @@ async def _set_model(new_model: TrainedModel) -> None:
     global MODEL
     async with MODEL_LOCK:
         MODEL = new_model
+        try:
+            save_model_to_disk(new_model)
+        except Exception:
+            pass
 
 
 @app.post("/api/v1/admin/retrain", response_model=RetrainResponse)
