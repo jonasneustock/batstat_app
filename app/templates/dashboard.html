@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>BatStat – Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body class="min-h-screen bg-gradient-to-r from-blue-600 to-indigo-700 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-4xl p-8">
+        <!-- Logo -->
+        <div class="flex justify-center mb-4">
+            <svg class="w-16 h-16" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                <rect x="2" y="16" width="48" height="28" rx="4" ry="4" fill="#4F46E5" />
+                <rect x="50" y="22" width="6" height="16" rx="1" fill="#22D3EE" />
+                <polyline points="6,38 16,30 26,34 36,26 44,32" fill="none" stroke="#22D3EE" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+        </div>
+        <h1 class="text-2xl font-bold text-gray-800 mb-4 text-center">Training Data Dashboard</h1>
+        <h2 class="text-xl font-semibold text-gray-800 mb-3">Summary</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-gray-700 text-sm">
+            <div><span class="font-semibold">Records:</span> {{ summary.count }}</div>
+            <div><span class="font-semibold">Age Range:</span> {{ summary.min_age|round(2) }} – {{ summary.max_age|round(2) }} years</div>
+            <div><span class="font-semibold">Odometer Range:</span> {{ summary.min_km|format_number }} – {{ summary.max_km|format_number }} km</div>
+            <div><span class="font-semibold">EOL Range:</span> {{ summary.min_eol|format_number }} – {{ summary.max_eol|format_number }} km</div>
+        </div>
+        <h2 class="text-xl font-semibold text-gray-800 mt-6 mb-2">Preview (first 10 records)</h2>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200 border border-gray-200">
+                <thead class="bg-gray-50">
+                <tr>
+                    {% for col in preview[0].keys() %}
+                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">{{ col }}</th>
+                    {% endfor %}
+                </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                {% for row in preview %}
+                    <tr class="{% if loop.index is even %}bg-gray-50{% endif %}">
+                        {% for value in row.values() %}
+                            <td class="px-3 py-2 text-sm text-gray-700 whitespace-nowrap">{{ value|format_value }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="mt-6 text-center">
+            <a href="/" class="inline-block px-4 py-2 bg-indigo-600 text-white font-semibold rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">Back to form</a>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>BatStat – Battery Lifetime Predictor</title>
+    <!-- Import Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body class="min-h-screen bg-gradient-to-r from-blue-600 to-indigo-700 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-8">
+        <!-- Inline logo composed of a battery outline with an analytics line -->
+        <div class="flex justify-center mb-4">
+            <svg class="w-20 h-20" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                <!-- battery body -->
+                <rect x="2" y="16" width="48" height="28" rx="4" ry="4" fill="#4F46E5" />
+                <!-- battery terminal -->
+                <rect x="50" y="22" width="6" height="16" rx="1" fill="#22D3EE" />
+                <!-- stylised analytics line -->
+                <polyline points="6,38 16,30 26,34 36,26 44,32" fill="none" stroke="#22D3EE" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+        </div>
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-1">BatStat</h1>
+        <p class="text-center text-gray-500 mb-6">Predict your electric car's battery lifetime</p>
+        <form class="space-y-4" method="get" action="/predict">
+            <div>
+                <label for="brand" class="block text-sm font-medium text-gray-700">Brand</label>
+                <select id="brand" name="brand" required
+                        class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                    {% for b in brands %}
+                        <option value="{{ b }}">{{ b }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="car_type" class="block text-sm font-medium text-gray-700">Car Type</label>
+                <select id="car_type" name="car_type" required
+                        class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                    {% for t in car_types %}
+                        <option value="{{ t }}">{{ t }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="build_year" class="block text-sm font-medium text-gray-700">Build Year</label>
+                <input type="number" id="build_year" name="build_year" min="1990" max="{{ current_year }}" value="{{ current_year }}" required
+                       class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+            </div>
+            <div>
+                <label for="km_current" class="block text-sm font-medium text-gray-700">Current Kilometres</label>
+                <input type="number" id="km_current" name="km_current" step="100" min="0" value="0" required
+                       class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+            </div>
+            <button type="submit"
+                    class="w-full py-2 px-4 bg-indigo-600 text-white font-semibold rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                Predict
+            </button>
+        </form>
+        <p class="mt-6 text-center text-sm text-gray-500">
+            <a href="/dashboard" class="text-indigo-600 hover:text-indigo-900">View dashboard</a>
+        </p>
+    </div>
+</body>
+</html>
