@@ -33,6 +33,7 @@ from .data.sources import (
     USER_SUBMISSIONS_APPROVED_PATH,
     default_sources,
     load_all_sources,
+    normalize_car_type_name,
 )
 from .ml.model import TrainedModel, train_model
 
@@ -481,12 +482,13 @@ async def contribute_submit(request: Request):
         range_current_km=range_current_km,
     )
 
+    normalized_car_type = normalize_car_type_name(car_type)
     submission_id = str(uuid.uuid4())
     row = {
         "submission_id": submission_id,
         "submitted_at": datetime.utcnow().isoformat(),
         "brand": brand.strip(),
-        "car_type": car_type.strip(),
+        "car_type": normalized_car_type,
         "model_year": model_year,
         "odometer_km": odometer_km,
         "range_original_km": range_original_km,
@@ -529,12 +531,13 @@ async def predict(request: Request):
     model = await get_model()
     current_year = datetime.now().year
     age_years = max(0.0, current_year - build_year)
+    normalized_car_type = normalize_car_type_name(car_type)
     # Create input dataframe with dummy values for uncollected features
     input_df = pd.DataFrame(
         [
             {
                 "brand": brand,
-                "car_type": car_type,
+                "car_type": normalized_car_type,
                 "age_years": age_years,
                 "km": km_current,
                 # Use typical averages for features the user does not provide
@@ -581,7 +584,7 @@ async def predict(request: Request):
     try:
         log_interaction(
             brand=brand,
-            car_type=car_type,
+            car_type=normalized_car_type,
             build_year=build_year,
             km_current=km_current,
             predicted_lower=result["lower"],
@@ -600,7 +603,7 @@ async def predict(request: Request):
         {
             "request": request,
             "brand": brand,
-            "car_type": car_type,
+            "car_type": normalized_car_type,
             "build_year": build_year,
             "km_current": km_current,
             "result": result,
@@ -662,10 +665,11 @@ async def feedback(
     """
     # Normalize feedback value to one of the accepted labels
     feedback_label = "positive" if fb.lower().startswith("pos") else "negative"
+    normalized_car_type = normalize_car_type_name(car_type)
     try:
         log_interaction(
             brand=brand,
-            car_type=car_type,
+            car_type=normalized_car_type,
             build_year=build_year,
             km_current=km_current,
             predicted_lower=predicted_lower,
@@ -679,7 +683,7 @@ async def feedback(
         {
             "request": request,
             "brand": brand,
-            "car_type": car_type,
+            "car_type": normalized_car_type,
             "build_year": build_year,
             "km_current": km_current,
             "predicted_lower": predicted_lower,
