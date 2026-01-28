@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -45,7 +46,7 @@ executor = ThreadPoolExecutor(max_workers=1)
 
 # Job status tracking
 JOB_STATUS: Dict[str, Dict[str, Any]] = {}
-ADMIN_TOKEN = "change-me"
+ADMIN_TOKEN = os.getenv("BATSTAT_ADMIN_TOKEN", "change-me")
 
 # ---------------------------------------------------------------------------
 # Logging utilities

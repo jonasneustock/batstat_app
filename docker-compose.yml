@@ -4,6 +4,8 @@ services:
     build: .
     ports:
       - "8000:8000"
+    environment:
+      - BATSTAT_ADMIN_TOKEN=Jbadmin1!!!
     volumes:
       - batstat-data:/app/batstat_app/data
       - batstat-models:/app/batstat_app/models

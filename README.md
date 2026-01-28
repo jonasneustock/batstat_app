@@ -56,7 +56,7 @@ Admin API:
 - `/api/v1/admin/submissions?token=change-me`
 - `/api/v1/admin/submissions/{submission_id}/accept?token=change-me`
 
-Update the admin token in `app/main.py` by editing `ADMIN_TOKEN`.
+Set the admin token via `BATSTAT_ADMIN_TOKEN` (falls back to `change-me`).
 
 ## Retraining
 
