@@ -8,7 +8,7 @@ subclassing `DataSource` and implementing the `load` method to return a
 pandas DataFrame with the following columns:
 
     brand:          string, manufacturer name
-    car_type:       string, vehicle type (e.g. sedan, SUV)
+    car_type:       string, model name (e.g. Model 3, Leaf)
     age_years:      float, age of the vehicle in years
     km:             float, current odometer reading in kilometres
     fast_share:     float, proportion of charges performed at fast chargers (0–1)
@@ -25,8 +25,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Sequence
+from typing import Any, List, Sequence
 import hashlib
+import json
 import urllib.request
 
 import numpy as np
@@ -62,15 +63,36 @@ def _read_csv_cached(url: str, cache_path: Path) -> pd.DataFrame:
     """
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
-        return pd.read_csv(cache_path)
+        return pd.read_csv(cache_path, low_memory=False)
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
             data = response.read()
         cache_path.write_bytes(data)
-        return pd.read_csv(cache_path)
+        return pd.read_csv(cache_path, low_memory=False)
     except Exception:
         if cache_path.exists():
-            return pd.read_csv(cache_path)
+            return pd.read_csv(cache_path, low_memory=False)
+        raise
+
+
+def _read_json_cached(url: str, cache_path: Path) -> Any:
+    """
+    Read a JSON payload from a URL with a local cache fallback.
+
+    The JSON is cached on first successful download. If the download fails
+    and a cache exists, the cached file is used instead.
+    """
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists():
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            data = response.read()
+        cache_path.write_bytes(data)
+        return json.loads(data)
+    except Exception:
+        if cache_path.exists():
+            return json.loads(cache_path.read_text(encoding="utf-8"))
         raise
 
 
@@ -163,9 +185,15 @@ class ExampleSource(DataSource):
     def load(self) -> pd.DataFrame:
         rng = np.random.default_rng(self.random_state)
         brands = np.array(["Tesla", "Nissan", "BMW", "VW", "Renault"])
-        car_types = np.array(["Sedan", "SUV", "Hatchback", "Coupe"])
+        models_by_brand = {
+            "Tesla": ["Model 3", "Model Y", "Model S", "Model X"],
+            "Nissan": ["Leaf", "Ariya"],
+            "BMW": ["i3", "i4", "iX"],
+            "VW": ["ID.3", "ID.4", "e-Golf"],
+            "Renault": ["Zoe", "Megane E-Tech"],
+        }
         brand_col = rng.choice(brands, size=self.n_samples)
-        type_col = rng.choice(car_types, size=self.n_samples)
+        type_col = np.array([rng.choice(models_by_brand[brand]) for brand in brand_col])
         age_years = rng.uniform(0, 12, size=self.n_samples)
         km = rng.uniform(0, 250_000, size=self.n_samples)
         fast_share = rng.uniform(0.0, 0.8, size=self.n_samples)
@@ -215,7 +243,7 @@ class WashingtonEVPopulationSource(DataSource):
 
     url: str = "https://data.wa.gov/resource/f6w7-q2d2.csv"
     cache_path: Path = DATA_CACHE_DIR / "wa_ev_population.csv"
-    limit: int = 5000
+    limit: int = 500000
 
     def load(self) -> pd.DataFrame:
         url = f"{self.url}?$limit={self.limit}"
@@ -231,13 +259,15 @@ class WashingtonEVPopulationSource(DataSource):
         age_years = current_year - model_year
         make = df["make"].astype(str).str.title()
         ev_type = df["ev_type"].astype(str)
-        car_type = ev_type.replace(
+        ev_class = ev_type.replace(
             {
                 "Battery Electric Vehicle (BEV)": "BEV",
                 "Plug-in Hybrid Electric Vehicle (PHEV)": "PHEV",
             }
         )
-        is_phev = car_type.str.contains("PHEV", na=False)
+        is_phev = ev_class.str.contains("PHEV", na=False)
+        model_name = df.get("model", pd.Series("Unknown", index=df.index)).astype(str)
+        model_name = model_name.str.strip().replace("", "Unknown")
         electric_range = pd.to_numeric(df["electric_range"], errors="coerce")
         range_km = electric_range.fillna(0) * 1.60934
 
@@ -245,7 +275,7 @@ class WashingtonEVPopulationSource(DataSource):
         feature_df = _build_feature_frame(
             base_id=base_id,
             brand=make,
-            car_type=car_type,
+            car_type=model_name,
             age_years=age_years,
             range_km=range_km,
             is_phev=is_phev,
@@ -259,7 +289,7 @@ class FuelEconomyEVSource(DataSource):
 
     url: str = "https://www.fueleconomy.gov/feg/epadata/vehicles.csv"
     cache_path: Path = DATA_CACHE_DIR / "epa_vehicles.csv"
-    max_rows: int = 5000
+    max_rows: int = 500000
 
     def load(self) -> pd.DataFrame:
         df = _read_csv_cached(self.url, self.cache_path)
@@ -280,10 +310,15 @@ class FuelEconomyEVSource(DataSource):
         if self.max_rows and len(df) > self.max_rows:
             df = df.sample(n=self.max_rows, random_state=42)
 
+        fuel_type = df.get("fuelType1", pd.Series("", index=df.index, dtype=str)).astype(str)
+        fuel_type2 = df.get("fuelType2", pd.Series("", index=df.index, dtype=str)).astype(str)
+
         current_year = datetime.now().year
         age_years = current_year - pd.to_numeric(df["year"], errors="coerce")
         brand = df["make"].astype(str).str.title()
-        car_type = df.get("VClass", pd.Series("Unknown", index=df.index)).astype(str)
+        model_name = df.get("model", pd.Series("", index=df.index)).astype(str).str.strip()
+        fallback = df.get("VClass", pd.Series("Unknown", index=df.index)).astype(str)
+        model_name = model_name.where(model_name.ne(""), fallback)
         range_miles = pd.to_numeric(df.get("range", 0), errors="coerce")
         range_alt = pd.to_numeric(df.get("rangeA", 0), errors="coerce")
         range_miles = range_miles.fillna(range_alt)
@@ -294,7 +329,7 @@ class FuelEconomyEVSource(DataSource):
         feature_df = _build_feature_frame(
             base_id=base_id,
             brand=brand,
-            car_type=car_type,
+            car_type=model_name,
             age_years=age_years,
             range_km=range_km,
             is_phev=is_phev,
@@ -361,10 +396,159 @@ class UserApprovedSubmissionsSource(DataSource):
         return feature_df.dropna()
 
 
+@dataclass
+class OpenEVDataDatasetSource(DataSource):
+    """Open EV Data dataset with model specs and range information."""
+
+    url: str = (
+        "https://github.com/open-ev-data/open-ev-data-dataset/releases/download/"
+        "v1.24.0/open-ev-data-v1.24.0.csv"
+    )
+    cache_path: Path = DATA_CACHE_DIR / "open_ev_data_dataset.csv"
+    max_rows: int = 200000
+
+    def load(self) -> pd.DataFrame:
+        df = _read_csv_cached(self.url, self.cache_path)
+        df = df.rename(columns=str.strip)
+        required_cols = ["make_name", "model_name", "year"]
+        missing = [col for col in required_cols if col not in df.columns]
+        if missing:
+            raise ValueError(f"Open EV data missing columns: {missing}")
+
+        if self.max_rows and len(df) > self.max_rows:
+            df = df.sample(n=self.max_rows, random_state=42)
+
+        current_year = datetime.now().year
+        age_years = current_year - pd.to_numeric(df["year"], errors="coerce")
+        brand = df["make_name"].fillna("Unknown").astype(str).str.title()
+        model_name = df["model_name"].fillna("").astype(str).str.strip()
+        trim_name = df.get("trim_name", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+        variant_name = df.get("variant_name", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+
+        def combine_name(model: str, trim: str, variant: str) -> str:
+            base = model.strip() or "Unknown"
+            extra = trim.strip() or variant.strip()
+            if extra and extra.lower() in base.lower():
+                extra = ""
+            return f"{base} {extra}".strip()
+
+        car_name = pd.Series(
+            [combine_name(m, t, v) for m, t, v in zip(model_name, trim_name, variant_name)],
+            index=df.index,
+        )
+
+        range_wltp = pd.to_numeric(df.get("range_wltp_km", 0), errors="coerce")
+        range_epa = pd.to_numeric(df.get("range_epa_km", 0), errors="coerce")
+        range_km = range_wltp.fillna(range_epa)
+
+        battery_kwh = pd.to_numeric(
+            df.get("battery_capacity_net_kwh", pd.Series(0, index=df.index)),
+            errors="coerce",
+        )
+        fallback_range = battery_kwh * 5.5
+        range_km = range_km.where(range_km > 0, fallback_range).fillna(0)
+
+        vehicle_type = df.get("vehicle_type", pd.Series("", index=df.index)).fillna("").astype(str)
+        name_blob = (model_name + " " + trim_name + " " + variant_name).str.lower()
+        is_phev = vehicle_type.str.contains("phev", case=False, na=False) | name_blob.str.contains(
+            "phev|plug[- ]in", na=False
+        )
+
+        base_id = df.get(
+            "unique_code", pd.Series(index=df.index, data=np.arange(len(df)))
+        ).astype(str)
+
+        feature_df = _build_feature_frame(
+            base_id=base_id,
+            brand=brand,
+            car_type=car_name,
+            age_years=age_years,
+            range_km=range_km,
+            is_phev=is_phev,
+        )
+        return feature_df.dropna()
+
+
+@dataclass
+class OpenEVDataSpecsSource(DataSource):
+    """Open EV Data specs JSON with battery size and consumption."""
+
+    url: str = "https://raw.githubusercontent.com/KilowattApp/open-ev-data/master/data/ev-data.json"
+    cache_path: Path = DATA_CACHE_DIR / "open_ev_data_specs.json"
+    max_rows: int = 200000
+
+    def load(self) -> pd.DataFrame:
+        payload = _read_json_cached(self.url, self.cache_path)
+        if isinstance(payload, dict):
+            items = payload.get("data", [])
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            items = []
+        if not items:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(items)
+        if self.max_rows and len(df) > self.max_rows:
+            df = df.sample(n=self.max_rows, random_state=42)
+
+        current_year = datetime.now().year
+        age_years = current_year - pd.to_numeric(
+            df.get("release_year", pd.Series(np.nan, index=df.index)), errors="coerce"
+        )
+        brand = (
+            df.get("brand", pd.Series("Unknown", index=df.index))
+            .fillna("Unknown")
+            .astype(str)
+            .str.title()
+        )
+        model_name = (
+            df.get("model", pd.Series("Unknown", index=df.index))
+            .fillna("Unknown")
+            .astype(str)
+            .str.strip()
+        )
+        model_name = model_name.replace("", "Unknown")
+
+        battery_kwh = pd.to_numeric(
+            df.get("usable_battery_size", pd.Series(0, index=df.index)), errors="coerce"
+        )
+        energy_consumption = df.get(
+            "energy_consumption", pd.Series([{}] * len(df), index=df.index)
+        )
+        avg_consumption = energy_consumption.apply(
+            lambda v: v.get("average_consumption") if isinstance(v, dict) else None
+        )
+        avg_consumption = pd.to_numeric(avg_consumption, errors="coerce")
+        range_km = np.where(avg_consumption > 0, battery_kwh / (avg_consumption / 100.0), np.nan)
+        range_km = pd.Series(range_km, index=df.index)
+        fallback_range = battery_kwh * 5.5
+        range_km = range_km.where(range_km > 0, fallback_range).fillna(0)
+
+        name_blob = model_name.str.lower()
+        is_phev = name_blob.str.contains("phev|plug[- ]in", na=False)
+
+        base_id = df.get(
+            "id", pd.Series(index=df.index, data=np.arange(len(df)))
+        ).astype(str)
+
+        feature_df = _build_feature_frame(
+            base_id=base_id,
+            brand=brand,
+            car_type=model_name,
+            age_years=age_years,
+            range_km=range_km,
+            is_phev=is_phev,
+        )
+        return feature_df.dropna()
+
+
 def default_sources() -> List[DataSource]:
     """Primary data sources used by the application."""
     return [
         WashingtonEVPopulationSource(),
         FuelEconomyEVSource(),
+        OpenEVDataDatasetSource(),
+        OpenEVDataSpecsSource(),
         UserApprovedSubmissionsSource(),
     ]

@@ -33,7 +33,7 @@
                 </select>
             </div>
             <div>
-                <label for="car_type" class="block text-sm font-medium text-gray-700">Car Type</label>
+                <label for="car_type" class="block text-sm font-medium text-gray-700">Car Name (Model)</label>
                 <select id="car_type" name="car_type" required
                         class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
                     {% for t in car_types %}
@@ -62,5 +62,34 @@
             <a href="/contribute" class="text-indigo-600 hover:text-indigo-900">Share your car data</a>
         </p>
     </div>
+    <script>
+        const brandCarTypes = {{ brand_car_types | tojson }};
+        const allCarTypes = {{ car_types | tojson }};
+        const brandSelect = document.getElementById("brand");
+        const carTypeSelect = document.getElementById("car_type");
+
+        function setCarTypeOptions(values, selectedValue) {
+            carTypeSelect.innerHTML = "";
+            values.forEach((value) => {
+                const option = document.createElement("option");
+                option.value = value;
+                option.textContent = value;
+                if (selectedValue && selectedValue === value) {
+                    option.selected = true;
+                }
+                carTypeSelect.appendChild(option);
+            });
+        }
+
+        function updateCarTypes() {
+            const previousValue = carTypeSelect.value;
+            const selectedBrand = brandSelect.value;
+            const values = brandCarTypes[selectedBrand] || allCarTypes;
+            setCarTypeOptions(values, values.includes(previousValue) ? previousValue : values[0]);
+        }
+
+        brandSelect.addEventListener("change", updateCarTypes);
+        document.addEventListener("DOMContentLoaded", updateCarTypes);
+    </script>
 </body>
 </html>

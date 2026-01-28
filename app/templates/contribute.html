@@ -24,7 +24,7 @@
                 </datalist>
             </div>
             <div>
-                <label for="car_type" class="block text-sm font-medium text-gray-700">Car Type</label>
+                <label for="car_type" class="block text-sm font-medium text-gray-700">Car Name (Model)</label>
                 <input id="car_type" name="car_type" list="car-type-list" required
                        class="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
                 <datalist id="car-type-list">
@@ -62,5 +62,36 @@
             <a href="/" class="text-indigo-600 hover:text-indigo-900">Back to predictor</a>
         </p>
     </div>
+    <script>
+        const brandCarTypes = {{ brand_car_types | tojson }};
+        const allCarTypes = {{ car_types | tojson }};
+        const brandInput = document.getElementById("brand");
+        const carTypeList = document.getElementById("car-type-list");
+
+        const brandKeyMap = {};
+        Object.keys(brandCarTypes).forEach((key) => {
+            brandKeyMap[key.toLowerCase()] = key;
+        });
+
+        function setCarTypeOptions(values) {
+            carTypeList.innerHTML = "";
+            values.forEach((value) => {
+                const option = document.createElement("option");
+                option.value = value;
+                carTypeList.appendChild(option);
+            });
+        }
+
+        function updateCarTypeList() {
+            const typed = brandInput.value.trim().toLowerCase();
+            const actualKey = brandKeyMap[typed];
+            const values = actualKey ? brandCarTypes[actualKey] : allCarTypes;
+            setCarTypeOptions(values);
+        }
+
+        brandInput.addEventListener("input", updateCarTypeList);
+        brandInput.addEventListener("change", updateCarTypeList);
+        document.addEventListener("DOMContentLoaded", updateCarTypeList);
+    </script>
 </body>
 </html>

@@ -193,7 +193,7 @@ def _validate_submission_values(
     if not brand.strip():
         errors.append("brand is required")
     if not car_type.strip():
-        errors.append("car_type is required")
+        errors.append("car name is required")
     if model_year < 1990 or model_year > current_year:
         errors.append("model_year must be between 1990 and the current year")
     if odometer_km < 0:
@@ -237,7 +237,7 @@ async def get_model() -> TrainedModel:
             MODEL = load_model_from_disk()
             if MODEL is None:
                 # Load dataset and train initial model
-            df = load_all_sources(default_sources())
+                df = load_all_sources(default_sources())
                 if df.empty:
                     raise HTTPException(status_code=500, detail="No training data available")
                 MODEL = train_model(df)
@@ -280,8 +280,14 @@ async def index(request: Request):
     # here, so regenerate from the configured sources. For a real implementation
     # you might persist unique values separately.
     df = load_all_sources(default_sources())
-    brands = sorted(df["brand"].unique())
-    car_types = sorted(df["car_type"].unique())
+    brands = sorted(df["brand"].dropna().unique())
+    car_types = sorted(df["car_type"].dropna().unique())
+    brand_car_types = (
+        df.dropna(subset=["brand", "car_type"])
+        .groupby("brand")["car_type"]
+        .apply(lambda values: sorted(set(values)))
+        .to_dict()
+    )
     current_year = datetime.now().year
     return templates.TemplateResponse(
         "index.html",
@@ -289,6 +295,7 @@ async def index(request: Request):
             "request": request,
             "brands": brands,
             "car_types": car_types,
+            "brand_car_types": brand_car_types,
             "current_year": current_year,
         },
     )
@@ -306,14 +313,21 @@ async def contribute(request: Request):
         df = load_all_sources(default_sources())
         brands = sorted(df["brand"].dropna().unique())
         car_types = sorted(df["car_type"].dropna().unique())
+        brand_car_types = (
+            df.dropna(subset=["brand", "car_type"])
+            .groupby("brand")["car_type"]
+            .apply(lambda values: sorted(set(values)))
+            .to_dict()
+        )
     except Exception:
-        pass
+        brand_car_types = {}
     return templates.TemplateResponse(
         "contribute.html",
         {
             "request": request,
             "brands": brands,
             "car_types": car_types,
+            "brand_car_types": brand_car_types,
             "current_year": current_year,
         },
     )

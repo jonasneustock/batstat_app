@@ -13,6 +13,8 @@ from batstat_app.app.data.sources import (
     DataSource,
     ExampleSource,
     FuelEconomyEVSource,
+    OpenEVDataDatasetSource,
+    OpenEVDataSpecsSource,
     UserApprovedSubmissionsSource,
     WashingtonEVPopulationSource,
     default_sources,
@@ -117,6 +119,7 @@ class TestRealSources(unittest.TestCase):
                 "vin_1_10": ["AAA123", "BBB456"],
                 "model_year": [2020, 2018],
                 "make": ["TESLA", "NISSAN"],
+                "model": ["Model 3", "Leaf"],
                 "ev_type": [
                     "Battery Electric Vehicle (BEV)",
                     "Plug-in Hybrid Electric Vehicle (PHEV)",
@@ -139,7 +142,7 @@ class TestRealSources(unittest.TestCase):
         for col in required_cols:
             self.assertIn(col, df.columns)
         self.assertTrue((df["eol_km"] >= df["km"]).all())
-        self.assertTrue(df["car_type"].isin(["BEV", "PHEV"]).all())
+        self.assertTrue(df["car_type"].isin(["Model 3", "Leaf"]).all())
 
     @mock.patch("batstat_app.app.data.sources._read_csv_cached")
     def test_fuel_economy_source_filters_ev(self, mock_read_csv) -> None:
@@ -149,6 +152,7 @@ class TestRealSources(unittest.TestCase):
                 "fuelType1": ["Electricity", "Gasoline"],
                 "fuelType2": ["", ""],
                 "atvType": ["EV", ""],
+                "model": ["Model S", "Focus"],
                 "VClass": ["Hatchback", "Sedan"],
                 "year": [2020, 2019],
                 "make": ["Tesla", "Ford"],
@@ -169,10 +173,12 @@ class TestDefaultSources(unittest.TestCase):
     def test_default_sources_list(self) -> None:
         """default_sources should return instantiated adapters."""
         sources = default_sources()
-        self.assertEqual(len(sources), 3)
+        self.assertEqual(len(sources), 5)
         self.assertIsInstance(sources[0], WashingtonEVPopulationSource)
         self.assertIsInstance(sources[1], FuelEconomyEVSource)
-        self.assertIsInstance(sources[2], UserApprovedSubmissionsSource)
+        self.assertIsInstance(sources[2], OpenEVDataDatasetSource)
+        self.assertIsInstance(sources[3], OpenEVDataSpecsSource)
+        self.assertIsInstance(sources[4], UserApprovedSubmissionsSource)
 
 
 class TestUserApprovedSubmissionsSource(unittest.TestCase):
@@ -192,7 +198,7 @@ class TestUserApprovedSubmissionsSource(unittest.TestCase):
             path = Path(tmpdir) / "approved.csv"
             path.write_text(
                 "submission_id,brand,car_type,model_year,odometer_km,range_original_km,range_current_km\n"
-                "abc123,Tesla,BEV,2020,35000,500,430\n",
+                "abc123,Tesla,Model 3,2020,35000,500,430\n",
                 encoding="utf-8",
             )
             source = UserApprovedSubmissionsSource(path=path)
@@ -200,6 +206,55 @@ class TestUserApprovedSubmissionsSource(unittest.TestCase):
             self.assertEqual(len(df), 1)
             self.assertIn("eol_km", df.columns)
             self.assertGreaterEqual(df.loc[0, "eol_km"], df.loc[0, "km"])
+
+
+class TestOpenEVDataDatasetSource(unittest.TestCase):
+    """Tests for the Open EV Data dataset source."""
+
+    @mock.patch("batstat_app.app.data.sources._read_csv_cached")
+    def test_open_ev_dataset_load(self, mock_read_csv) -> None:
+        mock_read_csv.return_value = pd.DataFrame(
+            {
+                "unique_code": ["abc"],
+                "make_name": ["Tesla"],
+                "model_name": ["Model 3"],
+                "year": [2021],
+                "trim_name": ["Long Range"],
+                "variant_name": [""],
+                "range_wltp_km": [560],
+                "range_epa_km": [0],
+                "battery_capacity_net_kwh": [75],
+                "vehicle_type": ["PassengerCar"],
+            }
+        )
+        source = OpenEVDataDatasetSource(max_rows=0)
+        df = source.load()
+        self.assertEqual(len(df), 1)
+        self.assertIn("car_type", df.columns)
+        self.assertTrue(df.loc[0, "car_type"].startswith("Model 3"))
+
+
+class TestOpenEVDataSpecsSource(unittest.TestCase):
+    """Tests for the Open EV Data specs JSON source."""
+
+    @mock.patch("batstat_app.app.data.sources._read_json_cached")
+    def test_open_ev_specs_load(self, mock_read_json) -> None:
+        mock_read_json.return_value = {
+            "data": [
+                {
+                    "id": "xyz",
+                    "brand": "Nissan",
+                    "model": "Leaf",
+                    "release_year": 2020,
+                    "usable_battery_size": 40.0,
+                    "energy_consumption": {"average_consumption": 17.5},
+                }
+            ]
+        }
+        source = OpenEVDataSpecsSource(max_rows=0)
+        df = source.load()
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df.loc[0, "car_type"], "Leaf")
 
 
 class TestLoadAllSourcesErrors(unittest.TestCase):

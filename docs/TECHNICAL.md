@@ -10,7 +10,7 @@ details for BatStat.
     and admin review.
   - Model persistence to `models/trained_model.joblib`.
 - `app/data/sources.py`:
-  - Source adapters (Washington EV population, EPA fuel economy).
+  - Source adapters (Washington EV population, EPA fuel economy, Open EV Data datasets).
   - Approved user submissions source.
   - Dataset caching helpers.
 - `app/ml/model.py`:
@@ -21,7 +21,7 @@ details for BatStat.
 
 1) Sources are loaded via `default_sources()` in `app/data/sources.py`.
 2) Each source normalizes records into a common schema:
-   - `brand`, `car_type`, `age_years`, `km`
+   - `brand`, `car_type` (model name), `age_years`, `km`
    - `fast_share`, `avg_soc`, `avg_temp_c`
    - `eol_km`
 3) Remote datasets are cached under `data/source_cache` after first download.
@@ -77,4 +77,3 @@ mechanism.
 - `/api/v1/admin/submissions/{id}/accept` approve submission
 - `/api/v1/admin/retrain` trigger retraining
 - `/api/v1/admin/status/{job_id}` check retrain status
-

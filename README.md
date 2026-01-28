@@ -37,6 +37,8 @@ The compose file uses named volumes for:
 The app loads data from:
 - Washington State EV population dataset
 - EPA fuel economy dataset (EV/PHEV filtered)
+- Open EV Data dataset (CSV releases)
+- Open EV Data specs dataset (Kilowatt JSON)
 - Approved user submissions stored locally
 
 Remote datasets are cached under `data/source_cache` after first download.
@@ -84,4 +86,3 @@ Run all tests:
 ```bash
 python -m unittest
 ```
-

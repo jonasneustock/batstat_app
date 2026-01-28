@@ -10,7 +10,7 @@ decision making.
 
 The modelling pipeline uses:
 
-* OneHotEncoder for categorical variables (brand, car_type)
+* OneHotEncoder for categorical variables (brand, car_type/model name)
 * StandardScaler for numeric variables (age_years, km, fast_share, avg_soc, avg_temp_c)
 * GradientBoostingRegressor as the base estimator
 
