@@ -22,6 +22,7 @@ import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -53,6 +54,9 @@ ADMIN_TOKEN = os.getenv("BATSTAT_ADMIN_TOKEN", "change-me")
 
 import csv
 from pathlib import Path
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Directory and file for logging requests and feedback.  This file will accumulate
 # all prediction inputs along with predictions and any subsequent user
