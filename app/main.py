@@ -12,7 +12,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -26,7 +29,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .data.sources import default_sources, load_all_sources
+from .data.sources import (
+    DATA_CACHE_DIR,
+    USER_SUBMISSIONS_APPROVED_PATH,
+    default_sources,
+    load_all_sources,
+    normalize_car_type_name,
+)
 from .ml.model import TrainedModel, train_model
 
 import numpy as np  # needed for random and array operations
@@ -41,9 +50,17 @@ templates = Jinja2Templates(directory="batstat_app/app/templates")
 # Global model and lock for thread‑safe updates
 MODEL: Optional[TrainedModel] = None
 MODEL_LOCK = asyncio.Lock()
+MODEL_DATA_SIGNATURE: Optional[str] = None
 
 # Executor for background retraining tasks
 executor = ThreadPoolExecutor(max_workers=1)
+
+# Dataset cache and locks
+DATA_CACHE: Optional[pd.DataFrame] = None
+DATA_SIGNATURE: Optional[str] = None
+DATA_LOCK = threading.Lock()
+
+TRAINING_STATE = {"in_progress": False}
 
 # Job status tracking
 JOB_STATUS: Dict[str, Dict[str, Any]] = {}
@@ -64,6 +81,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # process the history of interactions.
 LOG_FILE = Path(__file__).resolve().parent.parent / "data" / "interaction_logs.csv"
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "trained_model.joblib"
+MODEL_META_PATH = Path(__file__).resolve().parent.parent / "models" / "trained_model_meta.json"
 SUBMISSIONS_PENDING_FILE = (
     Path(__file__).resolve().parent.parent / "data" / "user_submissions_pending.csv"
 )
@@ -234,23 +252,131 @@ def save_model_to_disk(model: TrainedModel) -> None:
     joblib.dump(model, MODEL_PATH)
 
 
+def load_model_metadata() -> Optional[Dict[str, Any]]:
+    """Load model metadata such as the data signature."""
+    if not MODEL_META_PATH.exists():
+        return None
+    try:
+        return json.loads(MODEL_META_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def save_model_metadata(data_signature: str) -> None:
+    """Persist the data signature used to train the current model."""
+    MODEL_META_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"data_signature": data_signature, "trained_at": datetime.utcnow().isoformat()}
+    MODEL_META_PATH.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _signature_paths() -> List[Path]:
+    files: List[Path] = []
+    if DATA_CACHE_DIR.exists():
+        files.extend(sorted(DATA_CACHE_DIR.glob("*")))
+    if USER_SUBMISSIONS_APPROVED_PATH.exists():
+        files.append(USER_SUBMISSIONS_APPROVED_PATH)
+    return files
+
+
+def _compute_data_signature(df: pd.DataFrame) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(f"rows:{len(df)}".encode("utf-8"))
+    hasher.update((",".join(df.columns)).encode("utf-8"))
+    for path in _signature_paths():
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        hasher.update(f"{path}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def refresh_dataset_cache(force: bool = False) -> None:
+    """Load and cache the training dataset."""
+    global DATA_CACHE, DATA_SIGNATURE
+    if not force and DATA_CACHE is not None:
+        return
+    df = load_all_sources(default_sources())
+    signature = _compute_data_signature(df)
+    with DATA_LOCK:
+        DATA_CACHE = df
+        DATA_SIGNATURE = signature
+
+
+def get_cached_dataset() -> pd.DataFrame:
+    """Return the cached dataset, loading it if needed."""
+    if DATA_CACHE is None:
+        refresh_dataset_cache(force=True)
+    with DATA_LOCK:
+        return DATA_CACHE.copy() if DATA_CACHE is not None else pd.DataFrame()
+
+
+def get_dataset_snapshot() -> tuple[pd.DataFrame, Optional[str]]:
+    """Return a snapshot of the cached dataset and its signature."""
+    if DATA_CACHE is None:
+        refresh_dataset_cache(force=True)
+    with DATA_LOCK:
+        df = DATA_CACHE.copy() if DATA_CACHE is not None else pd.DataFrame()
+        signature = DATA_SIGNATURE
+    if signature is None:
+        signature = _compute_data_signature(df)
+    return df, signature
+
+
+def _schedule_training(reason: str, *, refresh_data: bool = False) -> Optional[str]:
+    """Schedule model training in the background if not already running."""
+    if TRAINING_STATE["in_progress"]:
+        return None
+    job_id = str(uuid.uuid4())
+    TRAINING_STATE["in_progress"] = True
+    JOB_STATUS[job_id] = {"status": "queued", "reason": reason}
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(executor, _run_training_job, job_id, refresh_data)
+    return job_id
+
+
+def _run_training_job(job_id: str, refresh_data: bool) -> None:
+    """Train a model in a background thread and swap in on success."""
+    try:
+        JOB_STATUS[job_id]["status"] = "running"
+        JOB_STATUS[job_id]["started_at"] = datetime.utcnow().isoformat()
+        if refresh_data:
+            refresh_dataset_cache(force=True)
+        df, signature = get_dataset_snapshot()
+        if df.empty:
+            raise RuntimeError("No training data available for retraining")
+        new_model = train_model(df, random_state=np.random.randint(0, 2**32 - 1))
+        asyncio.run(_set_model(new_model, signature))
+        JOB_STATUS[job_id]["status"] = "completed"
+        JOB_STATUS[job_id]["finished_at"] = datetime.utcnow().isoformat()
+    except Exception as exc:
+        JOB_STATUS[job_id]["status"] = "failed"
+        JOB_STATUS[job_id]["error"] = str(exc)
+    finally:
+        TRAINING_STATE["in_progress"] = False
+
+
 async def get_model() -> TrainedModel:
     """Return the currently loaded model, loading if necessary."""
     global MODEL
     async with MODEL_LOCK:
         if MODEL is None:
-            MODEL = load_model_from_disk()
-            if MODEL is None:
-                # Load dataset and train initial model
-                df = load_all_sources(default_sources())
-                if df.empty:
-                    raise HTTPException(status_code=500, detail="No training data available")
-                MODEL = train_model(df)
-                try:
-                    save_model_to_disk(MODEL)
-                except Exception:
-                    pass
+            raise HTTPException(status_code=503, detail="Model is initializing")
         return MODEL
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    """Warm caches and schedule training if needed."""
+    global MODEL, MODEL_DATA_SIGNATURE
+    refresh_dataset_cache(force=True)
+    MODEL = load_model_from_disk()
+    metadata = load_model_metadata()
+    MODEL_DATA_SIGNATURE = metadata.get("data_signature") if metadata else None
+    if MODEL is None:
+        _schedule_training("startup_initial", refresh_data=False)
+    elif DATA_SIGNATURE is not None and MODEL_DATA_SIGNATURE != DATA_SIGNATURE:
+        _schedule_training("startup_data_change", refresh_data=False)
 
 
 # ---------------------------------------------------------------------------
@@ -279,12 +405,7 @@ async def index(request: Request):
     """
     Render the main form for users to input vehicle details.
     """
-    # Preload model and dataset to populate brand/type options
-    model = await get_model()
-    # Access the training data used to build the model; not stored directly
-    # here, so regenerate from the configured sources. For a real implementation
-    # you might persist unique values separately.
-    df = load_all_sources(default_sources())
+    df = get_cached_dataset()
     brands = sorted(df["brand"].dropna().unique())
     car_types = sorted(df["car_type"].dropna().unique())
     brand_car_types = (
@@ -315,7 +436,7 @@ async def contribute(request: Request):
     brands: List[str] = []
     car_types: List[str] = []
     try:
-        df = load_all_sources(default_sources())
+        df = get_cached_dataset()
         brands = sorted(df["brand"].dropna().unique())
         car_types = sorted(df["car_type"].dropna().unique())
         brand_car_types = (
@@ -365,12 +486,13 @@ async def contribute_submit(request: Request):
         range_current_km=range_current_km,
     )
 
+    normalized_car_type = normalize_car_type_name(car_type)
     submission_id = str(uuid.uuid4())
     row = {
         "submission_id": submission_id,
         "submitted_at": datetime.utcnow().isoformat(),
         "brand": brand.strip(),
-        "car_type": car_type.strip(),
+        "car_type": normalized_car_type,
         "model_year": model_year,
         "odometer_km": odometer_km,
         "range_original_km": range_original_km,
@@ -413,12 +535,13 @@ async def predict(request: Request):
     model = await get_model()
     current_year = datetime.now().year
     age_years = max(0.0, current_year - build_year)
+    normalized_car_type = normalize_car_type_name(car_type)
     # Create input dataframe with dummy values for uncollected features
     input_df = pd.DataFrame(
         [
             {
                 "brand": brand,
-                "car_type": car_type,
+                "car_type": normalized_car_type,
                 "age_years": age_years,
                 "km": km_current,
                 # Use typical averages for features the user does not provide
@@ -465,7 +588,7 @@ async def predict(request: Request):
     try:
         log_interaction(
             brand=brand,
-            car_type=car_type,
+            car_type=normalized_car_type,
             build_year=build_year,
             km_current=km_current,
             predicted_lower=result["lower"],
@@ -484,7 +607,7 @@ async def predict(request: Request):
         {
             "request": request,
             "brand": brand,
-            "car_type": car_type,
+            "car_type": normalized_car_type,
             "build_year": build_year,
             "km_current": km_current,
             "result": result,
@@ -504,7 +627,7 @@ async def dashboard(request: Request):
     """
     Display a simple dashboard with summary statistics of the training data.
     """
-    df = load_all_sources(default_sources())
+    df = get_cached_dataset()
     summary = {
         "count": len(df),
         "min_age": df["age_years"].min(),
@@ -546,10 +669,11 @@ async def feedback(
     """
     # Normalize feedback value to one of the accepted labels
     feedback_label = "positive" if fb.lower().startswith("pos") else "negative"
+    normalized_car_type = normalize_car_type_name(car_type)
     try:
         log_interaction(
             brand=brand,
-            car_type=car_type,
+            car_type=normalized_car_type,
             build_year=build_year,
             km_current=km_current,
             predicted_lower=predicted_lower,
@@ -563,7 +687,7 @@ async def feedback(
         {
             "request": request,
             "brand": brand,
-            "car_type": car_type,
+            "car_type": normalized_car_type,
             "build_year": build_year,
             "km_current": km_current,
             "predicted_lower": predicted_lower,
@@ -607,6 +731,7 @@ async def admin_accept_submission(request: Request, submission_id: str, token: s
     accepted = approve_submission(submission_id)
     if not accepted:
         raise HTTPException(status_code=404, detail="Submission not found")
+    _schedule_training("approved_submission", refresh_data=True)
     return templates.TemplateResponse(
         "admin_submission_result.html",
         {
@@ -636,35 +761,20 @@ async def admin_accept_submission_api(submission_id: str, token: str = Query(...
     accepted = approve_submission(submission_id)
     if not accepted:
         raise HTTPException(status_code=404, detail="Submission not found")
+    _schedule_training("approved_submission", refresh_data=True)
     return {"submission_id": submission_id, "status": "accepted"}
 
 
-def _run_retraining(job_id: str) -> None:
-    """Internal function executed in thread pool to retrain the model."""
-    try:
-        JOB_STATUS[job_id]["status"] = "running"
-        JOB_STATUS[job_id]["started_at"] = datetime.utcnow().isoformat()
-        # Load fresh dataset (could be updated with new sources)
-        df = load_all_sources(default_sources())
-        if df.empty:
-            raise RuntimeError("No training data available for retraining")
-        new_model = train_model(df, random_state=np.random.randint(0, 2**32 - 1))
-        # Update global model atomically using a new event loop in this thread
-        asyncio.run(_set_model(new_model))
-        JOB_STATUS[job_id]["status"] = "completed"
-        JOB_STATUS[job_id]["finished_at"] = datetime.utcnow().isoformat()
-    except Exception as exc:
-        JOB_STATUS[job_id]["status"] = "failed"
-        JOB_STATUS[job_id]["error"] = str(exc)
-
-
-async def _set_model(new_model: TrainedModel) -> None:
+async def _set_model(new_model: TrainedModel, data_signature: Optional[str]) -> None:
     """Replace the global model in a thread‑safe manner."""
-    global MODEL
+    global MODEL, MODEL_DATA_SIGNATURE
     async with MODEL_LOCK:
         MODEL = new_model
+        MODEL_DATA_SIGNATURE = data_signature
         try:
             save_model_to_disk(new_model)
+            if data_signature is not None:
+                save_model_metadata(data_signature)
         except Exception:
             pass
 
@@ -680,11 +790,9 @@ async def retrain(token: str = Query(..., description="Admin token")):
     """
     # In a real application use secure authentication; here use simple token
     _require_admin_token(token)
-    job_id = str(uuid.uuid4())
-    JOB_STATUS[job_id] = {"status": "queued"}
-    # Schedule background training
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(executor, _run_retraining, job_id)
+    job_id = _schedule_training("admin_retrain", refresh_data=True)
+    if job_id is None:
+        raise HTTPException(status_code=409, detail="Training already running")
     return RetrainResponse(job_id=job_id, status=JOB_STATUS[job_id]["status"])
 
 

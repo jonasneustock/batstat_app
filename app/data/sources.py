@@ -106,6 +106,27 @@ def _hash_series_fraction(series: pd.Series, salt: str) -> pd.Series:
     return series.fillna("").astype(str).apply(lambda v: _hash_fraction(v, salt))
 
 
+def _normalize_car_type_name(value: str) -> str:
+    cleaned = str(value).strip()
+    if not cleaned:
+        return "Unknown"
+    parts = [part for part in cleaned.split() if part]
+    if not parts:
+        return "Unknown"
+    return " ".join(parts[:2])
+
+
+def _normalize_car_type_series(series: pd.Series) -> pd.Series:
+    tokens = series.fillna("").astype(str).str.strip().str.split()
+    normalized = tokens.apply(lambda parts: " ".join(parts[:2]) if parts else "Unknown")
+    return normalized.replace("", "Unknown")
+
+
+def normalize_car_type_name(value: str) -> str:
+    """Normalize car names to a two-word cluster."""
+    return _normalize_car_type_name(value)
+
+
 def _derive_usage_features(base_id: pd.Series, is_phev: pd.Series) -> pd.DataFrame:
     """Derive proxy usage features when only partial telemetry is available."""
     frac_fast = _hash_series_fraction(base_id, "fast")
@@ -160,11 +181,12 @@ def _build_feature_frame(
     base_life = np.where(is_phev, 140_000, 190_000)
     eol_km = km + (base_life + range_km * 120.0) * (0.9 + 0.2 * frac_eol)
     eol_km = np.maximum(eol_km, km + 10_000)
+    normalized_car_type = _normalize_car_type_series(car_type)
 
     return pd.DataFrame(
         {
             "brand": brand.astype(str),
-            "car_type": car_type.astype(str),
+            "car_type": normalized_car_type.astype(str),
             "age_years": age_years.astype(float),
             "km": km.astype(float),
             "fast_share": fast_share.astype(float),
@@ -376,7 +398,7 @@ class UserApprovedSubmissionsSource(DataSource):
         eol_km = np.maximum(eol_km, odometer_km)
         eol_km = eol_km.fillna(odometer_km)
 
-        car_type = df["car_type"].astype(str)
+        car_type = _normalize_car_type_series(df["car_type"].astype(str))
         is_phev = car_type.str.contains("PHEV|Plug", case=False, na=False)
         base_id = df["submission_id"].astype(str)
         usage_features = _derive_usage_features(base_id, is_phev)
